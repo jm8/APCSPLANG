@@ -1,0 +1,13 @@
+name: apcsplang
+version: 0.1.0
+
+authors:
+  - josh <josh@example.com>
+
+targets:
+  apcsplang:
+    main: src/apcsplang.cr
+
+crystal: 0.32.1
+
+license: MIT
