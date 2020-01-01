@@ -622,7 +622,7 @@ module Apcsplang
     def display_stat
       @scanner.next_token # consume DISPLAY
       if @scanner.lookahead != TokenType::LeftParen
-        raise ParseException.new(@scanner.line, "unexpected token '#{@scanner.value}' (DISPLAY requires parentheses)")
+        raise ParseException.new(@scanner.line, "expected '(', found '#{@scanner.value}' (DISPLAY requires parentheses)")
       end
 
       @scanner.next_token # consume '('
@@ -635,7 +635,7 @@ module Apcsplang
       expression
 
       if @scanner.lookahead != TokenType::RightParen
-        raise ParseException.new(@scanner.line, "unexpected token '#{@scanner.value}' (expected closing parenthesis for DISPLAY statement)")
+        raise ParseException.new(@scanner.line, "expected '(', found '#{@scanner.value}' (expected closing parenthesis for DISPLAY statement)")
       end
 
       @code.write_byte(Opcode::Display, @scanner.line)
@@ -792,7 +792,7 @@ module Apcsplang
   puts "compiled\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
 
   source = <<-'APLANG'
-    2+3
+    DISPLAY 2+3
   APLANG
 
   # program = Program.new "2 + false"
@@ -830,3 +830,4 @@ module Apcsplang
     program.execute
   end
 end
+ 
