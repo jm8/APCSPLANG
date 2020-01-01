@@ -248,16 +248,188 @@ module Apcsplang
     end
   end
 
-  enum Opcode
+  enum Opcode : UInt8
     Return
+    Constant
+
+    #Arithmentic
+    Negate
+    Add
+    Subtract
+    Divide
+    Multiply
+    
+    #Relational
+    GreaterThan
+    GreaterOrEqual
+    LessThan
+    LessOrEqual
+    Equals
+    NotEquals
+
+    #Boolean
+    And
+    Or
+    Not
+
+    Display
+  end
+
+  alias Value = Float64 | Bool
+
+  struct Program
+    @text : String
+    def value_type_name(x : Value)
+      if x.is_a?(Float64)
+        "number"
+      elsif x.is_a?(Bool)
+        "Boolean"
+      else
+        x.class.to_s
+      end
+    end
+
+    def initialize(@text)
+      @code = Array(UInt8).new(256)
+      #TODO: make `lines` take less memory
+      @lines = Array(Int32).new(256)
+      @stack = Array(Value).new(256)
+      @constants = Array(Value).new(256)
+      @ip = 0
+    end
+
+    def add_constant(value)
+      @constants << value
+      @constants.size.to_u8 - 1
+    end
+
+    def write_byte(byte : UInt8, line)
+      @lines << line
+      @code << byte
+    end
+
+    def write_byte(byte : Opcode, line)
+      @lines << line
+      @code << byte.value
+    end
+
+    def read_byte
+      @ip += 1
+      @code[@ip - 1]
+    end
+
+    def error(string)
+      puts "#{@lines[@ip].to_s.rjust(4)} | #{@text.each_line.skip(@lines[@ip]-1).first}"
+      puts "Error: #{string}"
+    end
+
+    macro arithop(op, name)
+      b = @stack.pop
+      a = @stack.pop
+      
+      if a.is_a?(Float64) && b.is_a?(Float64)
+        @stack.push (a {{op.id}} b)
+      else
+        #TODO: debug information lol
+        error "cannot {{name.id}} #{value_type_name a} to #{value_type_name b}"
+        return
+      end
+    end
+
+    macro booleanop(op, name)
+      b = @stack.pop
+      a = @stack.pop
+      
+      if a.is_a?(Bool) && b.is_a?(Bool)
+        @stack.push (a {{op.id}} b)
+      else
+        #TODO: debug information lol
+        error "cannot {{name.id}} #{value_type_name a} and #{value_type_name b}"
+        return
+      end
+    end
+
+    def execute
+      while @ip < @code.size
+        opcode = Opcode.new(read_byte)
+        case opcode
+        when Opcode::Return
+          puts @stack.pop
+          return
+        when Opcode::Display
+          print @stack.pop
+          print " "
+          STDOUT.flush
+        when Opcode::Constant
+          @stack.push @constants[read_byte]
+        when Opcode::Add
+          arithop(:+, "add")
+        when Opcode::Subtract
+          arithop(:-, "subtract")
+        when Opcode::Divide
+          arithop(:/, "divide")
+        when Opcode::Multiply
+          arithop(:*, "multiply")
+        when Opcode::Negate
+          a = @stack.pop
+          if a.is_a?(Float64)
+            @stack.push(-a)
+          else
+            error "cannot negate #{value_type_name a}"
+            return
+          end
+        when Opcode::GreaterThan
+          arithop(:>, "compare")
+        when Opcode::GreaterOrEqual
+          arithop(:>=, "compare")
+        when Opcode::LessThan
+          arithop(:<, "compare")
+        when Opcode::LessOrEqual
+          arithop(:<=, "compare")
+        when Opcode::Equals
+          arithop(:==, "compare")
+        when Opcode::NotEquals
+          arithop(:!=, "compare")
+        when Opcode::And
+          booleanop(:"&&", "and")
+        when Opcode::Or
+          booleanop(:"||", "or")
+        when Opcode::Not
+          a = @stack.pop
+          if a.is_a?(Bool)
+            @stack.push(!a)
+          else
+            error "cannot not #{value_type_name a}"
+            return
+          end
+        else
+          puts "Invalid instruction #{opcode}. Skipping."
+        end
+      end
+    end
   end
 
   puts "compiled\n==========\n\n"
 
-  scanner = Scanner.new ">="
-  until scanner.lookahead == TokenType::EOF
-    puts scanner.value
-    puts scanner.lookahead
-    scanner.next_token
-  end
+  # scanner = Scanner.new ">="
+  # until scanner.lookahead == TokenType::EOF
+  #   puts scanner.value
+  #   puts scanner.lookahead
+  #   scanner.next_token
+  # end
+
+  program = Program.new "50"
+  a = program.add_constant true
+  b = program.add_constant false
+
+  program.write_byte(Opcode::Constant, 1)
+  program.write_byte(a, 1)
+
+  program.write_byte(Opcode::Constant, 1)
+  program.write_byte(b, 1)
+
+  program.write_byte(Opcode::And, 1)
+  program.write_byte(Opcode::Display, 1)
+
+  program.execute
 end
