@@ -6,6 +6,7 @@ module Apcsplang
     EOF
     Number
     Identifier
+    StringLiteral
 
     # keywords
     And
@@ -68,7 +69,7 @@ module Apcsplang
               "TIMES"     => TokenType::RepeatTimes,
               "UNTIL"     => TokenType::Until,
               "DISPLAY"   => TokenType::Display,
-              "DISPLAYLN"   => TokenType::Displayln,
+              "DISPLAYLN" => TokenType::Displayln,
               "INPUT"     => TokenType::Input,
               "INSERT"    => TokenType::Insert,
               "APPEND"    => TokenType::Append,
@@ -112,6 +113,8 @@ module Apcsplang
           lex_number
         elsif next_char.letter?
           lex_identifier
+        elsif next_char == '"'
+          lex_string
         else
           case next_char
           when '+'
@@ -195,13 +198,11 @@ module Apcsplang
         end
       end
 
-      @end_index = @index - 1
-      @value = @text[@start_index..@end_index]
       lookahead
     end
 
     def error(err)
-      STDERR.puts "#{@line.to_s.rjust(4)} | #{@text.each_line.skip(@line-1).first}"
+      STDERR.puts "#{@line.to_s.rjust(4)} | #{@text.each_line.skip(@line - 1).first}"
       STDERR.puts "Scanning error: #{err}"
     end
 
@@ -224,6 +225,46 @@ module Apcsplang
         next_char = advance
       end
 
+      @end_index = @index - 1
+      @value = @text[@start_index..@end_index]
+    end
+
+    def lex_string
+      @type = TokenType::StringLiteral
+      str = String.build do |str|
+        next_char = advance
+        until next_char.nil? || next_char == '"'
+          if next_char == '\\'
+            next_char = advance
+            case next_char
+            when '"'
+              str << '"'
+            when '\\'
+              str << '\\'
+            when 'e'
+              str << '\e'
+            when 'f'
+              str << '\f'
+            when 'n'
+              str << '\n'
+            when 'r'
+              str << '\r'
+            when 't'
+              str << '\t'
+            when 'v'
+              str << '\v'
+            else
+              # TODO: should this throw an error?
+              str << next_char
+            end
+          else
+            str << next_char
+          end
+          next_char = advance
+        end
+      end
+      advance # consume right "
+      @value = str
       end_index = index - 1
     end
 
@@ -233,8 +274,9 @@ module Apcsplang
       until next_char.nil? || !next_char.alphanumeric?
         next_char = advance
       end
-      end_index = @index - 1
-      @type = KEYWORDS.fetch(@text[@start_index..end_index], TokenType::Identifier)
+      @end_index = @index - 1
+      @value = @text[@start_index..@end_index]
+      @type = KEYWORDS.fetch(@value, TokenType::Identifier)
     end
 
     def check_keyword
@@ -270,15 +312,15 @@ module Apcsplang
     Return
     Constant
 
-    #Arithmentic
+    # Arithmentic
     Negate
     Add
     Subtract
     Divide
     Multiply
     Mod
-    
-    #Relational
+
+    # Relational
     GreaterThan
     GreaterOrEqual
     LessThan
@@ -286,7 +328,7 @@ module Apcsplang
     Equals
     NotEquals
 
-    #Boolean
+    # Boolean
     And
     Or
     Not
@@ -297,15 +339,18 @@ module Apcsplang
     Displayln
   end
 
-  alias Value = Float64 | Bool
+  alias Value = Float64 | Bool | String
 
   struct Program
     @text : String
+
     def value_type_name(x : Value)
       if x.is_a?(Float64)
         "number"
       elsif x.is_a?(Bool)
         "Boolean"
+      elsif x.is_a?(String)
+        "string"
       else
         x.class.to_s
       end
@@ -313,7 +358,7 @@ module Apcsplang
 
     def initialize(@text)
       @code = Array(UInt8).new(256)
-      #TODO: make `lines` take less memory
+      # TODO: make `lines` take less memory
       @lines = Array(Int32).new(256)
       @stack = Array(Value).new(256)
       @constants = Array(Value).new(256)
@@ -347,7 +392,7 @@ module Apcsplang
     end
 
     def error(string)
-      STDERR.puts "#{@lines[@ip].to_s.rjust(4)} | #{@text.each_line.skip(@lines[@ip]-1).first}"
+      STDERR.puts "#{@lines[@ip].to_s.rjust(4)} | #{@text.each_line.skip(@lines[@ip] - 1).first}"
       STDERR.puts "Runtime error: #{string}"
     end
 
@@ -359,7 +404,7 @@ module Apcsplang
         @stack.push (a {{op.id}} b)
       else
         #TODO: debug information lol
-        error "cannot {{name.id}} #{value_type_name a} to #{value_type_name b}"
+        error "cannot {{name.id}} #{value_type_name a} to #{value_type_name b} (must be numbers)"
         return
       end
     end
@@ -371,7 +416,19 @@ module Apcsplang
       if a.is_a?(Bool) && b.is_a?(Bool)
         @stack.push (a {{op.id}} b)
       else
-        error "cannot {{name.id}} #{value_type_name a} and #{value_type_name b}"
+        error "cannot {{name.id}} #{value_type_name a} and #{value_type_name b} (must be Booleans)"
+        return
+      end
+    end
+
+    macro equalsop(op, name)
+      b = @stack.pop
+      a = @stack.pop
+      
+      if a.class == b.class
+        @stack.push (a {{op.id}} b)
+      else
+        error "cannot {{name.id}} #{value_type_name a} and #{value_type_name b} (must be the same type)"
         return
       end
     end
@@ -392,9 +449,9 @@ module Apcsplang
         #   puts @stack.pop
         #   return
         when Opcode::Void
-        case Opcode.new(read_byte)
+          case Opcode.new(read_byte)
           when Opcode::Display
-            print " "  
+            print " "
             STDOUT.flush
           when Opcode::Displayln
             puts ""
@@ -435,9 +492,9 @@ module Apcsplang
         when Opcode::LessOrEqual
           arithop(:<=, "compare")
         when Opcode::Equals
-          arithop(:==, "compare")
+          equalsop(:==, "compare")
         when Opcode::NotEquals
-          arithop(:!=, "compare")
+          equalsop(:!=, "compare")
         when Opcode::Mod
           arithop(:%, "modulus")
         when Opcode::And
@@ -472,11 +529,11 @@ module Apcsplang
         opcode = Opcode.new(@code[instruction_index])
         case opcode
         when Opcode::Constant
-          puts "#{instruction_index.to_s.rjust(4, '0')} CONSTANT #{@code[instruction_index+1]}\t(#{@constants[@code[instruction_index+1]]})"
+          puts "#{instruction_index.to_s.rjust(4, '0')} CONSTANT #{@code[instruction_index + 1]}\t(#{@constants[@code[instruction_index + 1]]})"
           instruction_index += 1
         else
           puts "#{instruction_index.to_s.rjust(4, '0')} #{opcode.to_s.upcase}"
-        end 
+        end
         instruction_index += 1
       end
     end
@@ -484,6 +541,7 @@ module Apcsplang
 
   class ParseException < Exception
     @message = "an unknown error occured while parsing"
+
     def initialize(@line, @message : String)
     end
 
@@ -512,10 +570,15 @@ module Apcsplang
       @scanner.next_token
     end
 
+    def string_expr
+      @code.push_new_constant(@scanner.value, @scanner.line)
+      @scanner.next_token
+    end
+
     # '(' expression ')'
     def paren_expr
       @scanner.next_token # eat '('
-      expression # parse expression
+      expression          # parse expression
       if @scanner.lookahead != TokenType::LeftParen
         raise ParseException.new(@scanner.line, "expected ')' to close parenthesses, found #{@scanner.value}")
       end
@@ -532,14 +595,14 @@ module Apcsplang
         return
       end
 
-      #return if there is no call
+      # return if there is no call
       # return unless @scanner.lookahead == TokenType::LeftParen
 
       # #there is a call
       # loop do
       #   expression
       #   break if @scanner.lookahead == TokenType::LeftParen
-      
+
       #   if @scanner.lookahead != TokenType::Comma
       #     raise ParseException.new(@scanner.line, "expected ')' or ',' in argument list, found #{@scanner.value}")
       #   end
@@ -548,64 +611,66 @@ module Apcsplang
       # end
 
       # @scanner.next_token #eat ')'
-      
+
       # puts "write call"
     end
 
     def display_stat
-      @scanner.next_token #consume DISPLAY
+      @scanner.next_token # consume DISPLAY
       if @scanner.lookahead != TokenType::LeftParen
         raise ParseException.new(@scanner.line, "unexpected token '#{@scanner.value}' (DISPLAY requires parentheses)")
       end
-      
-      @scanner.next_token #consume '('
+
+      @scanner.next_token # consume '('
       if @scanner.lookahead == TokenType::RightParen
         @code.write_byte(Opcode::Void, @scanner.line)
         @code.write_byte(Opcode::Display, @scanner.line)
-        @scanner.next_token #consume ')'
+        @scanner.next_token # consume ')'
         return
       end
       expression
-      
+
       if @scanner.lookahead != TokenType::RightParen
         raise ParseException.new(@scanner.line, "unexpected token '#{@scanner.value}' (expected closing parenthesis for DISPLAY statement)")
       end
 
       @code.write_byte(Opcode::Display, @scanner.line)
 
-      @scanner.next_token #consume ')'
+      @scanner.next_token # consume ')'
     end
 
     def displayln_stat
-      @scanner.next_token #consume DISPLAYln
+      @scanner.next_token # consume DISPLAYln
       if @scanner.lookahead != TokenType::LeftParen
         raise ParseException.new(@scanner.line, "unexpected token '#{@scanner.value}' (DISPLAYLN requires parentheses)")
       end
-      
-      @scanner.next_token #consume '('
+
+      @scanner.next_token # consume '('
       if @scanner.lookahead == TokenType::RightParen
         @code.write_byte(Opcode::Void, @scanner.line)
         @code.write_byte(Opcode::Displayln, @scanner.line)
-        @scanner.next_token #consume ')'
+        @scanner.next_token # consume ')'
         return
       end
 
       expression
-      
+
       if @scanner.lookahead != TokenType::RightParen
         raise ParseException.new(@scanner.line, "unexpected token '#{@scanner.value}' (expected closing parenthesis for DISPLAYLN statement)")
       end
 
       @code.write_byte(Opcode::Displayln, @scanner.line)
 
-      @scanner.next_token #consume ')'
+      @scanner.next_token # consume ')'
     end
 
     # identifierexpr | numberexpr | parenexpr
-    def primary(is_statement=false)
+    def primary(is_statement = false)
       case @scanner.lookahead
       when TokenType::Identifier
         identifier_expr
+      when TokenType::StringLiteral
+        string_expr
       when TokenType::Number
         number_expr
       when TokenType::LeftParen
@@ -615,9 +680,9 @@ module Apcsplang
       end
     end
 
-    def expression(is_statement=false)
+    def expression(is_statement = false)
       primary(is_statement)
-      
+
       binop(0)
     end
 
@@ -651,12 +716,12 @@ module Apcsplang
         operator = @scanner.lookahead
         @scanner.next_token
 
-        primary #get rhs of expression and push it
+        primary # get rhs of expression and push it
 
         next_precedence = get_precedence(@scanner.lookahead)
-        
-        if precedence < next_precedence #parse the rhs first, before writing the operator
-          binop(precedence+1)
+
+        if precedence < next_precedence # parse the rhs first, before writing the operator
+          binop(precedence + 1)
         end
 
         case operator
@@ -691,32 +756,30 @@ module Apcsplang
     end
 
     PrecedenceTable = {
-      TokenType::And => 10,
-      TokenType::Or => 10,
-      TokenType::LessThan => 20,
-      TokenType::LessOrEqual => 20,
-      TokenType::GreaterThan => 20,
+      TokenType::And            => 10,
+      TokenType::Or             => 10,
+      TokenType::LessThan       => 20,
+      TokenType::LessOrEqual    => 20,
+      TokenType::GreaterThan    => 20,
       TokenType::GreaterOrEqual => 20,
-      TokenType::Equals => 30,
-      TokenType::NotEquals => 30,
-      TokenType::Plus => 30,
-      TokenType::Minus => 30,
-      TokenType::Multiply => 40,
-      TokenType::Divide => 40,
-      TokenType::Mod => 40,
+      TokenType::Equals         => 30,
+      TokenType::NotEquals      => 30,
+      TokenType::Plus           => 30,
+      TokenType::Minus          => 30,
+      TokenType::Multiply       => 40,
+      TokenType::Divide         => 40,
+      TokenType::Mod            => 40,
     }
 
     def get_precedence(operator)
-      PrecedenceTable.fetch(operator, -1) #default precedence (-1) is not an operator
+      PrecedenceTable.fetch(operator, -1) # default precedence (-1) is not an operator
     end
   end
 
   puts "compiled\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-  
-  source = <<-APLANG
-    DISPLAY (5 = 3)
-    DISPLAY (2 /= 4)
-    DISPLAYLN ()
+
+  source = <<-'APLANG'
+    DISPLAYLN ("hello" /= "green")
   APLANG
 
   # program = Program.new "2 + false"
@@ -733,6 +796,13 @@ module Apcsplang
   # program.write_byte(Opcode::Return, 1)
 
   # program.execute
+
+
+  # scanner = Scanner.new source
+  # while scanner.lookahead != TokenType::EOF
+  #   puts scanner.lookahead
+  #   scanner.next_token
+  # end
 
   parser = Parser.new(source)
   begin
