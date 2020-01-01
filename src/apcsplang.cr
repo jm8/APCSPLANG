@@ -337,6 +337,8 @@ module Apcsplang
 
     Display
     Displayln
+
+    Discard
   end
 
   alias Value = Float64 | Bool | String
@@ -404,7 +406,7 @@ module Apcsplang
         @stack.push (a {{op.id}} b)
       else
         #TODO: debug information lol
-        error "cannot {{name.id}} #{value_type_name a} to #{value_type_name b} (must be numbers)"
+        error "cannot {{name.id}} #{value_type_name a} to #{value_type_name b} (both must be numbers)"
         return
       end
     end
@@ -416,7 +418,7 @@ module Apcsplang
       if a.is_a?(Bool) && b.is_a?(Bool)
         @stack.push (a {{op.id}} b)
       else
-        error "cannot {{name.id}} #{value_type_name a} and #{value_type_name b} (must be Booleans)"
+        error "cannot {{name.id}} #{value_type_name a} and #{value_type_name b} (both must be Booleans)"
         return
       end
     end
@@ -459,6 +461,8 @@ module Apcsplang
             STDERR.puts "Invalid operand to Void operation #{opcode}. Abort! (something went wrong with the interpreter)"
             return
           end
+        when Opcode::Discard
+          @stack.pop
         when Opcode::Display
           print value_string(@stack.pop)
           print " "
@@ -684,6 +688,14 @@ module Apcsplang
       primary(is_statement)
 
       binop(0)
+
+      if is_statement
+        @code.write_byte(Opcode::Discard, @scanner.line)
+      end
+    end
+
+    def declaration
+      statement
     end
 
     def statement
@@ -699,7 +711,7 @@ module Apcsplang
 
     def parse_start
       loop do
-        statement
+        declaration
         if @scanner.lookahead == TokenType::EOF
           break
         end
@@ -752,6 +764,7 @@ module Apcsplang
         when TokenType::Mod
           @code.write_byte(Opcode::Mod, @scanner.line)
         end
+        
       end
     end
 
@@ -779,7 +792,7 @@ module Apcsplang
   puts "compiled\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
 
   source = <<-'APLANG'
-    DISPLAYLN ("hello" /= "green")
+    2+3
   APLANG
 
   # program = Program.new "2 + false"
