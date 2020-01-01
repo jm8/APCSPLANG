@@ -20,11 +20,12 @@ module Apcsplang
     Procedure
     Repeat
     Return
-    Times
+    RepeatTimes
     Until
 
     # builtins
     Display
+    Displayln
     Input
     Insert
     Append
@@ -64,9 +65,10 @@ module Apcsplang
               "PROCEDURE" => TokenType::Procedure,
               "REPEAT"    => TokenType::Repeat,
               "RETURN"    => TokenType::Return,
-              "TIMES"     => TokenType::Times,
+              "TIMES"     => TokenType::RepeatTimes,
               "UNTIL"     => TokenType::Until,
               "DISPLAY"   => TokenType::Display,
+              "DISPLAYLN"   => TokenType::Displayln,
               "INPUT"     => TokenType::Input,
               "INSERT"    => TokenType::Insert,
               "APPEND"    => TokenType::Append,
@@ -79,6 +81,7 @@ module Apcsplang
     @value = ""
     @start_index = 0
     @end_index = 0
+    @line = 1
 
     def initialize(@text : String)
       @index = 0
@@ -125,7 +128,7 @@ module Apcsplang
               @type = TokenType::NotEquals
               advance
             else
-              @type = TokenType::Equals
+              @type = TokenType::Divide
             end
             advance
           when '{'
@@ -184,15 +187,26 @@ module Apcsplang
             advance
           else
             if !panic
-              puts "Error: invalid token at index #{@index}. Skipping."
+              error "unexpected character '#{next_char}'. Skipping..."
             end
             advance
             return next_token(true)
           end
         end
       end
+
       @end_index = @index - 1
       @value = @text[@start_index..@end_index]
+      lookahead
+    end
+
+    def error(err)
+      STDERR.puts "#{@line.to_s.rjust(4)} | #{@text.each_line.skip(@line-1).first}"
+      STDERR.puts "Scanning error: #{err}"
+    end
+
+    def line
+      @line
     end
 
     def lex_number
@@ -232,7 +246,11 @@ module Apcsplang
 
     def advance
       @index += 1
-      peek
+      next_char = peek
+      if next_char == '\n'
+        @line += 1
+      end
+      next_char
     end
 
     def lookahead
@@ -258,6 +276,7 @@ module Apcsplang
     Subtract
     Divide
     Multiply
+    Mod
     
     #Relational
     GreaterThan
@@ -272,7 +291,10 @@ module Apcsplang
     Or
     Not
 
+    Void
+
     Display
+    Displayln
   end
 
   alias Value = Float64 | Bool
@@ -313,14 +335,20 @@ module Apcsplang
       @code << byte.value
     end
 
+    def push_new_constant(constant : Value, line)
+      id = add_constant(constant)
+      write_byte(Opcode::Constant, line)
+      write_byte(id, line)
+    end
+
     def read_byte
       @ip += 1
       @code[@ip - 1]
     end
 
     def error(string)
-      puts "#{@lines[@ip].to_s.rjust(4)} | #{@text.each_line.skip(@lines[@ip]-1).first}"
-      puts "Error: #{string}"
+      STDERR.puts "#{@lines[@ip].to_s.rjust(4)} | #{@text.each_line.skip(@lines[@ip]-1).first}"
+      STDERR.puts "Runtime error: #{string}"
     end
 
     macro arithop(op, name)
@@ -343,9 +371,16 @@ module Apcsplang
       if a.is_a?(Bool) && b.is_a?(Bool)
         @stack.push (a {{op.id}} b)
       else
-        #TODO: debug information lol
         error "cannot {{name.id}} #{value_type_name a} and #{value_type_name b}"
         return
+      end
+    end
+
+    def value_string(x)
+      if x.is_a?(Float64)
+        x.to_s.sub(/\.0+$/, "")
+      else
+        x.to_s
       end
     end
 
@@ -353,13 +388,26 @@ module Apcsplang
       while @ip < @code.size
         opcode = Opcode.new(read_byte)
         case opcode
-        when Opcode::Return
-          puts @stack.pop
-          return
+        # when Opcode::Return
+        #   puts @stack.pop
+        #   return
+        when Opcode::Void
+        case Opcode.new(read_byte)
+          when Opcode::Display
+            print " "  
+            STDOUT.flush
+          when Opcode::Displayln
+            puts ""
+          else
+            STDERR.puts "Invalid operand to Void operation #{opcode}. Abort! (something went wrong with the interpreter)"
+            return
+          end
         when Opcode::Display
-          print @stack.pop
+          print value_string(@stack.pop)
           print " "
           STDOUT.flush
+        when Opcode::Displayln
+          puts value_string(@stack.pop)
         when Opcode::Constant
           @stack.push @constants[read_byte]
         when Opcode::Add
@@ -390,6 +438,8 @@ module Apcsplang
           arithop(:==, "compare")
         when Opcode::NotEquals
           arithop(:!=, "compare")
+        when Opcode::Mod
+          arithop(:%, "modulus")
         when Opcode::And
           booleanop(:"&&", "and")
         when Opcode::Or
@@ -403,33 +453,297 @@ module Apcsplang
             return
           end
         else
-          puts "Invalid instruction #{opcode}. Skipping."
+          STDERR.puts "Invalid instruction #{opcode}. Abort! (something went wrong with the interpreter)"
+          return
         end
+      end
+    end
+
+    def disassemble
+      puts "CONSTANTS"
+      constant_index = 0
+      until constant_index >= @constants.size
+        puts "#{constant_index.to_s.rjust(4, '0')} #{@constants[constant_index]}"
+        constant_index += 1
+      end
+      puts "\n\nCODE"
+      instruction_index = 0
+      until instruction_index >= @code.size
+        opcode = Opcode.new(@code[instruction_index])
+        case opcode
+        when Opcode::Constant
+          puts "#{instruction_index.to_s.rjust(4, '0')} CONSTANT #{@code[instruction_index+1]}\t(#{@constants[@code[instruction_index+1]]})"
+          instruction_index += 1
+        else
+          puts "#{instruction_index.to_s.rjust(4, '0')} #{opcode.to_s.upcase}"
+        end 
+        instruction_index += 1
       end
     end
   end
 
-  puts "compiled\n==========\n\n"
+  class ParseException < Exception
+    @message = "an unknown error occured while parsing"
+    def initialize(@line, @message : String)
+    end
 
-  # scanner = Scanner.new ">="
-  # until scanner.lookahead == TokenType::EOF
-  #   puts scanner.value
-  #   puts scanner.lookahead
-  #   scanner.next_token
-  # end
+    getter line : Int32
+    getter message : String | Nil
+  end
 
-  program = Program.new "50"
-  a = program.add_constant true
-  b = program.add_constant false
+  struct Parser
+    def initialize(@text : String)
+      @scanner = Scanner.new(@text)
+      @code = Program.new(@text)
+    end
 
-  program.write_byte(Opcode::Constant, 1)
-  program.write_byte(a, 1)
+    # def error(err)
+    #   STDERR.puts "#{[@ip].to_s.rjust(4)} | #{@text.each_line.skip(@lines[@ip]-1).first}"
+    #   STDERR.puts "Parse error: #{string}"
+    # end
 
-  program.write_byte(Opcode::Constant, 1)
-  program.write_byte(b, 1)
+    def program
+      @code
+    end
 
-  program.write_byte(Opcode::And, 1)
-  program.write_byte(Opcode::Display, 1)
+    # number
+    def number_expr
+      @code.push_new_constant(@scanner.value.to_f, @scanner.line)
+      @scanner.next_token
+    end
 
-  program.execute
+    # '(' expression ')'
+    def paren_expr
+      @scanner.next_token # eat '('
+      expression # parse expression
+      if @scanner.lookahead != TokenType::LeftParen
+        raise ParseException.new(@scanner.line, "expected ')' to close parenthesses, found #{@scanner.value}")
+      end
+      @scanner.next_token # eat ')'
+    end
+
+    #   identifier
+    # | identifier '(' expression {',' expression} ')'
+    def identifier_expr
+      name = @scanner.value
+      @scanner.next_token
+      unless @scanner.lookahead == TokenType::RightParen
+        puts "push variable #{name}"
+        return
+      end
+
+      #return if there is no call
+      # return unless @scanner.lookahead == TokenType::LeftParen
+
+      # #there is a call
+      # loop do
+      #   expression
+      #   break if @scanner.lookahead == TokenType::LeftParen
+      
+      #   if @scanner.lookahead != TokenType::Comma
+      #     raise ParseException.new(@scanner.line, "expected ')' or ',' in argument list, found #{@scanner.value}")
+      #   end
+
+      #   @scanner.next_token
+      # end
+
+      # @scanner.next_token #eat ')'
+      
+      # puts "write call"
+    end
+
+    def display_stat
+      @scanner.next_token #consume DISPLAY
+      if @scanner.lookahead != TokenType::LeftParen
+        raise ParseException.new(@scanner.line, "unexpected token '#{@scanner.value}' (DISPLAY requires parentheses)")
+      end
+      
+      @scanner.next_token #consume '('
+      if @scanner.lookahead == TokenType::RightParen
+        @code.write_byte(Opcode::Void, @scanner.line)
+        @code.write_byte(Opcode::Display, @scanner.line)
+        @scanner.next_token #consume ')'
+        return
+      end
+      expression
+      
+      if @scanner.lookahead != TokenType::RightParen
+        raise ParseException.new(@scanner.line, "unexpected token '#{@scanner.value}' (expected closing parenthesis for DISPLAY statement)")
+      end
+
+      @code.write_byte(Opcode::Display, @scanner.line)
+
+      @scanner.next_token #consume ')'
+    end
+
+    def displayln_stat
+      @scanner.next_token #consume DISPLAYln
+      if @scanner.lookahead != TokenType::LeftParen
+        raise ParseException.new(@scanner.line, "unexpected token '#{@scanner.value}' (DISPLAYLN requires parentheses)")
+      end
+      
+      @scanner.next_token #consume '('
+      if @scanner.lookahead == TokenType::RightParen
+        @code.write_byte(Opcode::Void, @scanner.line)
+        @code.write_byte(Opcode::Displayln, @scanner.line)
+        @scanner.next_token #consume ')'
+        return
+      end
+
+      expression
+      
+      if @scanner.lookahead != TokenType::RightParen
+        raise ParseException.new(@scanner.line, "unexpected token '#{@scanner.value}' (expected closing parenthesis for DISPLAYLN statement)")
+      end
+
+      @code.write_byte(Opcode::Displayln, @scanner.line)
+
+      @scanner.next_token #consume ')'
+    end
+
+    # identifierexpr | numberexpr | parenexpr
+    def primary(is_statement=false)
+      case @scanner.lookahead
+      when TokenType::Identifier
+        identifier_expr
+      when TokenType::Number
+        number_expr
+      when TokenType::LeftParen
+        paren_expr
+      else
+        raise ParseException.new(@scanner.line, "unexpected token '#{@scanner.value}' (expected an expression#{is_statement ? " or statement" : ""})")
+      end
+    end
+
+    def expression(is_statement=false)
+      primary(is_statement)
+      
+      binop(0)
+    end
+
+    def statement
+      case @scanner.lookahead
+      when TokenType::Display
+        display_stat
+      when TokenType::Displayln
+        displayln_stat
+      else
+        expression(true)
+      end
+    end
+
+    def parse_start
+      loop do
+        statement
+        if @scanner.lookahead == TokenType::EOF
+          break
+        end
+      end
+    end
+
+    def binop(minimum_precedence)
+      while true
+        precedence = get_precedence(@scanner.lookahead)
+        if (precedence < minimum_precedence)
+          return # don't push anything else besides lhs if it is a lower precednce or invalid operator
+        end
+
+        operator = @scanner.lookahead
+        @scanner.next_token
+
+        primary #get rhs of expression and push it
+
+        next_precedence = get_precedence(@scanner.lookahead)
+        
+        if precedence < next_precedence #parse the rhs first, before writing the operator
+          binop(precedence+1)
+        end
+
+        case operator
+        when TokenType::And
+          @code.write_byte(Opcode::And, @scanner.line)
+        when TokenType::Or
+          @code.write_byte(Opcode::Or, @scanner.line)
+        when TokenType::LessThan
+          @code.write_byte(Opcode::LessThan, @scanner.line)
+        when TokenType::LessOrEqual
+          @code.write_byte(Opcode::LessOrEqual, @scanner.line)
+        when TokenType::GreaterThan
+          @code.write_byte(Opcode::GreaterThan, @scanner.line)
+        when TokenType::GreaterOrEqual
+          @code.write_byte(Opcode::GreaterOrEqual, @scanner.line)
+        when TokenType::Equals
+          @code.write_byte(Opcode::Equals, @scanner.line)
+        when TokenType::NotEquals
+          @code.write_byte(Opcode::NotEquals, @scanner.line)
+        when TokenType::Plus
+          @code.write_byte(Opcode::Add, @scanner.line)
+        when TokenType::Minus
+          @code.write_byte(Opcode::Subtract, @scanner.line)
+        when TokenType::Multiply
+          @code.write_byte(Opcode::Multiply, @scanner.line)
+        when TokenType::Divide
+          @code.write_byte(Opcode::Divide, @scanner.line)
+        when TokenType::Mod
+          @code.write_byte(Opcode::Mod, @scanner.line)
+        end
+      end
+    end
+
+    PrecedenceTable = {
+      TokenType::And => 10,
+      TokenType::Or => 10,
+      TokenType::LessThan => 20,
+      TokenType::LessOrEqual => 20,
+      TokenType::GreaterThan => 20,
+      TokenType::GreaterOrEqual => 20,
+      TokenType::Equals => 30,
+      TokenType::NotEquals => 30,
+      TokenType::Plus => 30,
+      TokenType::Minus => 30,
+      TokenType::Multiply => 40,
+      TokenType::Divide => 40,
+      TokenType::Mod => 40,
+    }
+
+    def get_precedence(operator)
+      PrecedenceTable.fetch(operator, -1) #default precedence (-1) is not an operator
+    end
+  end
+
+  puts "compiled\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+  
+  source = <<-APLANG
+    DISPLAY (5 = 3)
+    DISPLAY (2 /= 4)
+    DISPLAYLN ()
+  APLANG
+
+  # program = Program.new "2 + false"
+  # a = program.add_constant 2.0
+  # b = program.add_constant false
+
+  # program.write_byte(Opcode::Constant, 1)
+  # program.write_byte(a, 1)
+
+  # program.write_byte(Opcode::Constant, 1)
+  # program.write_byte(b, 1)
+
+  # program.write_byte(Opcode::Add, 1)
+  # program.write_byte(Opcode::Return, 1)
+
+  # program.execute
+
+  parser = Parser.new(source)
+  begin
+    parser.parse_start
+  rescue e : ParseException
+    STDERR.puts "#{e.line.to_s.rjust(4)} | #{source.each_line.skip(e.line-1).first}"
+    STDERR.puts "Syntax error: #{e.message}"
+  else
+    program = parser.program
+    program.disassemble
+    puts "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    program.execute
+  end
 end
