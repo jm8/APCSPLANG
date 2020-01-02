@@ -344,6 +344,10 @@ module Apcsplang
     Displayln
 
     Discard
+
+    #Variables
+    SetVariable
+    GetVariable
   end
 
   struct Void
@@ -375,12 +379,28 @@ module Apcsplang
       @lines = Array(Int32).new(256)
       @stack = Array(Value).new(256)
       @constants = Array(Value).new(256)
+      @variables = Array(Value).new(256)
       @ip = 0
     end
 
     def add_constant(value)
       @constants << value
       @constants.size.to_u8 - 1
+    end
+
+    def new_variable
+      @variables << Void.new
+      @variables.size.to_u8 - 1
+    end
+
+    def set_variable(variable_id : UInt8, line)
+      write_byte(Opcode::SetVariable, line)
+      write_byte(variable_id, line)
+    end
+
+    def get_variable(variable_id : UInt8, line)
+      write_byte(Opcode::GetVariable, line)
+      write_byte(variable_id, line)
     end
 
     def write_byte(byte : UInt8, line)
@@ -398,6 +418,7 @@ module Apcsplang
       write_byte(Opcode::Constant, line)
       write_byte(id, line)
     end
+
 
     def read_byte
       @ip += 1
@@ -483,6 +504,16 @@ module Apcsplang
           arithop(:/, "divide")
         when Opcode::Multiply
           arithop(:*, "multiply")
+        when Opcode::SetVariable
+          value = @stack.pop
+          if value.is_a?(Void)
+            error("cannot set variable to nothing (maybe the right hand side doesn't return?)")
+          else
+            @variables[read_byte] = value
+          end
+        when Opcode::GetVariable
+          value = @variables[read_byte]
+          @stack.push value
         when Opcode::Negate
           a = @stack.pop
           if a.is_a?(Float64)
@@ -539,6 +570,12 @@ module Apcsplang
         when Opcode::Constant
           puts "#{instruction_index.to_s.rjust(4, '0')} CONSTANT #{@code[instruction_index + 1]}\t(#{@constants[@code[instruction_index + 1]]})"
           instruction_index += 1
+        when Opcode::GetVariable
+          puts "#{instruction_index.to_s.rjust(4, '0')} GETVARIABLE #{@code[instruction_index + 1]}"
+          instruction_index += 1
+        when Opcode::SetVariable
+          puts "#{instruction_index.to_s.rjust(4, '0')} SETVARIABLE #{@code[instruction_index + 1]}"
+          instruction_index += 1
         else
           puts "#{instruction_index.to_s.rjust(4, '0')} #{opcode.to_s.upcase}"
         end
@@ -561,12 +598,31 @@ module Apcsplang
     def initialize(@text : String)
       @scanner = Scanner.new(@text)
       @code = Program.new(@text)
+      @variable_names = Hash(String, UInt8).new
     end
 
     # def error(err)
     #   STDERR.puts "#{[@ip].to_s.rjust(4)} | #{@text.each_line.skip(@lines[@ip]-1).first}"
     #   STDERR.puts "Parse error: #{string}"
     # end
+
+    def lookup_variable(name)
+      if @variable_names.has_key?(name)
+        @variable_names[name]
+      else
+        raise ParseException.new(@scanner.line, "variable #{name} does not exist")
+      end
+    end
+
+    def lookup_variable_or_new(name)
+      if @variable_names.has_key?(name)
+        @variable_names[name]
+      else
+        var = @code.new_variable
+        @variable_names[name] = var
+        var
+      end
+    end
 
     def program
       @code
@@ -595,12 +651,50 @@ module Apcsplang
 
     #   identifier
     # | identifier '(' expression {',' expression} ')'
+    def identifier_expr_or_assignment
+      name = @scanner.value
+      @scanner.next_token
+      case @scanner.lookahead 
+      when TokenType::Assign
+        # puts "hi"
+        @scanner.next_token #consume id
+        expression()
+        id = lookup_variable_or_new(name)
+        @code.set_variable(id, @scanner.line) #doens't set it!!
+      else
+        id = lookup_variable(name)
+        @code.get_variable(id, @scanner.line)
+      end
+
+      # return if there is no call
+      # return unless @scanner.lookahead == TokenType::LeftParen
+
+      # #there is a call
+      # loop do
+      #   expression
+      #   break if @scanner.lookahead == TokenType::LeftParen
+
+      #   if @scanner.lookahead != TokenType::Comma
+      #     raise ParseException.new(@scanner.line, "expected ')' or ',' in argument list, found #{@scanner.value}")
+      #   end
+
+      #   @scanner.next_token
+      # end
+
+      # @scanner.next_token #eat ')'
+
+      # puts "write call"
+    end
+
     def identifier_expr
       name = @scanner.value
       @scanner.next_token
-      unless @scanner.lookahead == TokenType::RightParen
-        puts "push variable #{name}"
-        return
+      case @scanner.lookahead 
+      when TokenType::Assign
+        raise ParseException.new(@scanner.line, "Unexpected token '#{@scanner.value}': assignment cannot be an expression")
+      else
+        id = lookup_variable_or_new(name)
+        @code.get_variable(id, @scanner.line)
       end
 
       # return if there is no call
@@ -708,6 +802,8 @@ module Apcsplang
         display_stat
       when TokenType::Displayln
         displayln_stat
+      when TokenType::Identifier
+        identifier_expr_or_assignment
       else
         expression(true)
       end

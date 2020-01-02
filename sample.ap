@@ -1,1 +1,4 @@
-DISPLAYLN("Hello, world!")
+x ← 2
+x ← x + 2
+DISPLAY ("x =")
+DISPLAYLN (x)
