@@ -1,10 +1,12 @@
 # apcsplang
 
-TODO: Write a description here
+An programming language inspired by the AP Computer Science Principles language (see the [reference sheet](https://apcentral.collegeboard.org/pdf/ap-computer-science-principles-course-and-exam-description.pdf))
 
 ## Installation
 
-TODO: Write installation instructions here
+1. Install [Crystal](https://crystal-lang.org/install/)
+2. Download the source from Github
+3. `crystal build src/apcsplang.cr`
 
 ## Usage
 
@@ -24,4 +26,4 @@ TODO: Write development instructions here
 
 ## Contributors
 
-- [your-name-here](https://github.com/your-github-user) - creator and maintainer
+- [Josh](https://github.com/jm8) - creator and maintainer

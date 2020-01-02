@@ -1,3 +1,6 @@
+require "option_parser"
+require "admiral"
+
 # TODO: Write documentation for `Apcsplang`
 module Apcsplang
   VERSION = "0.1.0"
@@ -113,8 +116,8 @@ module Apcsplang
           lex_number
         elsif next_char.letter?
           lex_identifier
-        elsif next_char == '"'
-          lex_string
+        elsif next_char == '"' || next_char == '\''
+          lex_string(next_char)
         else
           case next_char
           when '+'
@@ -229,16 +232,18 @@ module Apcsplang
       @value = @text[@start_index..@end_index]
     end
 
-    def lex_string
+    def lex_string(end_delimiter)
       @type = TokenType::StringLiteral
       str = String.build do |str|
         next_char = advance
-        until next_char.nil? || next_char == '"'
+        until next_char.nil? || next_char == end_delimiter
           if next_char == '\\'
             next_char = advance
             case next_char
             when '"'
               str << '"'
+            when '\''
+              str << '\''
             when '\\'
               str << '\\'
             when 'e'
@@ -341,17 +346,23 @@ module Apcsplang
     Discard
   end
 
-  alias Value = Float64 | Bool | String
+  struct Void
+  end
+
+  alias Value = Float64 | Bool | String | Void
 
   struct Program
     @text : String
 
     def value_type_name(x : Value)
-      if x.is_a?(Float64)
+      case
+      when x.is_a?(Void)
+        "nothing"
+      when x.is_a?(Float64)
         "number"
-      elsif x.is_a?(Bool)
+      when x.is_a?(Bool)
         "Boolean"
-      elsif x.is_a?(String)
+      when x.is_a?(String)
         "string"
       else
         x.class.to_s
@@ -436,7 +447,9 @@ module Apcsplang
     end
 
     def value_string(x)
-      if x.is_a?(Float64)
+      if x.is_a?(Void)
+        ""
+      elsif x.is_a?(Float64)
         x.to_s.sub(/\.0+$/, "")
       else
         x.to_s
@@ -451,16 +464,7 @@ module Apcsplang
         #   puts @stack.pop
         #   return
         when Opcode::Void
-          case Opcode.new(read_byte)
-          when Opcode::Display
-            print " "
-            STDOUT.flush
-          when Opcode::Displayln
-            puts ""
-          else
-            STDERR.puts "Invalid operand to Void operation #{opcode}. Abort! (something went wrong with the interpreter)"
-            return
-          end
+          @stack.push Void.new
         when Opcode::Discard
           @stack.pop
         when Opcode::Display
@@ -789,45 +793,74 @@ module Apcsplang
     end
   end
 
-  puts "compiled\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+  class App < Admiral::Command
+    define_help description: "Runs the program", short: h
 
-  source = <<-'APLANG'
-    DISPLAY 2+3
-  APLANG
+    define_version "0.1.0", short: v
 
-  # program = Program.new "2 + false"
-  # a = program.add_constant 2.0
-  # b = program.add_constant false
+    define_flag disassemble : Bool,
+      description: "Shows disassembly instead of running program",
+      default: false,
+      short: d
 
-  # program.write_byte(Opcode::Constant, 1)
-  # program.write_byte(a, 1)
+    define_flag eval : Bool,
+      description: "Runs code from command line arguments",
+      default: false,
+      short: c,
+      long: code
 
-  # program.write_byte(Opcode::Constant, 1)
-  # program.write_byte(b, 1)
+    define_argument file : String
 
-  # program.write_byte(Opcode::Add, 1)
-  # program.write_byte(Opcode::Return, 1)
+    def run
+      if flags.eval
+        source = arguments.file
+        if !source.nil?
+          run_string(arguments.file, flags.disassemble)
+        else
+          STDERR.puts "Please specify source code when using -c."
+        end
+      else
+        filename = arguments.file
+        if filename
+          if File.file?(filename)
+            text = File.read(filename)
+            if !text.nil?
+              run_string(text, flags.disassemble)
+            else
+              STDERR.puts "Unable to read file #{filename}"
+            end
+          else
+            STDERR.puts "Unable to open file #{filename}"
+          end
+        else
+          puts help
+        end
+      end
+    end
 
-  # program.execute
+    def run_string(source_maybenil, disassemble)
+      if source_maybenil.nil?
+        source = ""
+      else
+        source = source_maybenil
+      end
+      begin
+        parser = Parser.new(source)
+        parser.parse_start
+      rescue e : ParseException
+        STDERR.puts "#{e.line.to_s.rjust(4)} | #{source.each_line.skip(e.line-1).first}"
+        STDERR.puts "Syntax error: #{e.message}"
+      else
+        program = parser.program
+        if disassemble
+          program.disassemble
+          puts "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        else
+          program.execute
+        end
+      end
+    end
 
-
-  # scanner = Scanner.new source
-  # while scanner.lookahead != TokenType::EOF
-  #   puts scanner.lookahead
-  #   scanner.next_token
-  # end
-
-  parser = Parser.new(source)
-  begin
-    parser.parse_start
-  rescue e : ParseException
-    STDERR.puts "#{e.line.to_s.rjust(4)} | #{source.each_line.skip(e.line-1).first}"
-    STDERR.puts "Syntax error: #{e.message}"
-  else
-    program = parser.program
-    program.disassemble
-    puts "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    program.execute
+    App.run
   end
 end
- 
