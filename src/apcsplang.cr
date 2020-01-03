@@ -363,12 +363,15 @@ module Apcsplang
 
     #control flow
     JumpIfFalse
+
+    #arrays
+    Array
   end
 
   struct Void
   end
 
-  alias Value = Float64 | Bool | String | Void
+  alias Value = Float64 | Bool | String | Void | Array(Value)
 
   struct Program
 
@@ -610,8 +613,7 @@ module Apcsplang
           else
             error "if statement must be a Boolean value, not a #{value_type_name value}"
           end
-
-        when Opcode::Not
+          when Opcode::Not
           a = @stack.pop
           if a.is_a?(Bool)
             @stack.push(!a)
@@ -619,6 +621,14 @@ module Apcsplang
             error "cannot not #{value_type_name a}"
             return
           end
+
+        when Opcode::Array
+          length = read_byte
+          last_stack = @stack.size - 1
+          first_stack = last_stack - length + 1
+          array = @stack[first_stack..last_stack]
+          @stack.delete_at(first_stack..last_stack)          
+          @stack.push array
         else
           STDERR.puts "Invalid instruction #{opcode}. Abort! (something went wrong with the interpreter)"
           return
@@ -872,9 +882,35 @@ module Apcsplang
       @scanner.next_token # consume ')'
     end
 
+    def list_expr
+      @scanner.next_token # consume '['
+      length = 0
+      loop do
+        expression
+        length += 1
+        if @scanner.lookahead == TokenType::Comma
+          @scanner.next_token
+          next
+        elsif @scanner.lookahead == TokenType::RightSquare
+          @scanner.next_token
+          break
+        else
+          raise ParseException.new(@scanner.line, "unexpected token '#{@scanner.value}' (expected ',' or ']' in list literal)")
+        end
+      end
+      @code.write_byte(Opcode::Array, @scanner.line)
+      @code.write_byte(length.to_u8, @scanner.line)
+    end
+
     # identifierexpr | numberexpr | parenexpr
     def primary(is_statement = false)
       case @scanner.lookahead
+      when TokenType::Not
+        expression
+        @code.write_byte(Opcode::Not, @scanner.line)
+      when TokenType::Minus
+        expression
+        @code.write_byte(Opcode::Negate, @scanner.line)
       when TokenType::Identifier
         identifier_expr
       when TokenType::True
@@ -887,6 +923,8 @@ module Apcsplang
         number_expr
       when TokenType::LeftParen
         paren_expr
+      when TokenType::LeftSquare
+        list_expr
       else
         raise ParseException.new(@scanner.line, "unexpected token '#{@scanner.value}' (expected an expression#{is_statement ? " or statement" : ""})")
       end
