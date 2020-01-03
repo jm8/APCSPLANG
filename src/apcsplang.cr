@@ -55,6 +55,10 @@ module Apcsplang
     NotEquals
     Assign
     Comma
+
+    #Boolean
+    True
+    False
   end
 
   KEYWORDS = {"AND"       => TokenType::And,
@@ -78,6 +82,8 @@ module Apcsplang
               "APPEND"    => TokenType::Append,
               "REMOVE"    => TokenType::Remove,
               "LENGTH"    => TokenType::Length,
+              "true"      => TokenType::True,
+              "false"     => TokenType::False,
   }
 
   struct Scanner
@@ -200,7 +206,10 @@ module Apcsplang
           end
         end
       end
-
+      unless @type == TokenType::StringLiteral || @type == TokenType::Identifier
+        @end_index = @index - 1
+        @value = @text[@start_index..@end_index]
+      end
       lookahead
     end
 
@@ -228,8 +237,7 @@ module Apcsplang
         next_char = advance
       end
 
-      @end_index = @index - 1
-      @value = @text[@start_index..@end_index]
+      
     end
 
     def lex_string(end_delimiter)
@@ -348,6 +356,13 @@ module Apcsplang
     #Variables
     SetVariable
     GetVariable
+
+    #boolean
+    True
+    False
+
+    #control flow
+    JumpIfFalse
   end
 
   struct Void
@@ -356,6 +371,11 @@ module Apcsplang
   alias Value = Float64 | Bool | String | Void
 
   struct Program
+
+    def last_index
+      @code.size - 1
+    end
+
     @text : String
 
     def value_type_name(x : Value)
@@ -413,16 +433,46 @@ module Apcsplang
       @code << byte.value
     end
 
+    def write_two_bytes(bytes : UInt16, line)
+      first = ((bytes & 0xff00) >> 8).to_u8
+      second = (bytes & 0x00ff).to_u8
+      @lines << line
+      @lines << line
+      @code << first
+      @code << second
+    end
+
     def push_new_constant(constant : Value, line)
       id = add_constant(constant)
       write_byte(Opcode::Constant, line)
       write_byte(id, line)
     end
 
+    def write_jump(jump_type : Opcode, line)
+      write_byte(jump_type, line)
+      write_two_bytes(0, line)
+      last_index - 1
+    end
+
+    def patch_jump(index : Int32)
+      jump = @code.size - index - 2 #-2 to adjust for the bytecode of the jump offset itself
+      #TODO: add checks for if it's too big
+      first = ((jump & 0xff00) >> 8).to_u8
+      second = (jump & 0x00ff).to_u8
+      @code[index] = first
+      @code[index+1] = second
+    end
+
 
     def read_byte
       @ip += 1
       @code[@ip - 1]
+    end
+
+    def read_two_bytes
+      first = read_byte.to_u16
+      second = read_byte.to_u16
+      (first << 8) + second
     end
 
     def error(string)
@@ -486,6 +536,10 @@ module Apcsplang
         #   return
         when Opcode::Void
           @stack.push Void.new
+        when Opcode::True
+          @stack.push true
+        when Opcode::False
+          @stack.push false
         when Opcode::Discard
           @stack.pop
         when Opcode::Display
@@ -508,12 +562,18 @@ module Apcsplang
           value = @stack.pop
           if value.is_a?(Void)
             error("cannot set variable to nothing (maybe the right hand side doesn't return?)")
+            return
           else
             @variables[read_byte] = value
           end
         when Opcode::GetVariable
           value = @variables[read_byte]
-          @stack.push value
+          if value.is_a?(Void)
+            error("variable does not exist")
+            return
+          else
+            @stack.push value
+          end
         when Opcode::Negate
           a = @stack.pop
           if a.is_a?(Float64)
@@ -540,6 +600,17 @@ module Apcsplang
           booleanop(:"&&", "and")
         when Opcode::Or
           booleanop(:"||", "or")
+        when Opcode::JumpIfFalse
+          value = @stack.pop
+          if value.is_a?(Bool)
+            jump = read_two_bytes
+            if value == false
+              @ip += jump
+            end
+          else
+            error "if statement must be a Boolean value, not a #{value_type_name value}"
+          end
+
         when Opcode::Not
           a = @stack.pop
           if a.is_a?(Bool)
@@ -566,18 +637,20 @@ module Apcsplang
       instruction_index = 0
       until instruction_index >= @code.size
         opcode = Opcode.new(@code[instruction_index])
+        print "#{instruction_index.to_s.rjust(4, '0')} [#{opcode.value.to_s.rjust(2,'0')}]#{opcode.to_s}"
         case opcode
         when Opcode::Constant
-          puts "#{instruction_index.to_s.rjust(4, '0')} CONSTANT #{@code[instruction_index + 1]}\t(#{@constants[@code[instruction_index + 1]]})"
+          puts " #{@code[instruction_index + 1]}\t(#{@constants[@code[instruction_index + 1]]})"
           instruction_index += 1
-        when Opcode::GetVariable
-          puts "#{instruction_index.to_s.rjust(4, '0')} GETVARIABLE #{@code[instruction_index + 1]}"
+        when Opcode::GetVariable, Opcode::SetVariable
+          puts " #{@code[instruction_index + 1]}"
           instruction_index += 1
-        when Opcode::SetVariable
-          puts "#{instruction_index.to_s.rjust(4, '0')} SETVARIABLE #{@code[instruction_index + 1]}"
-          instruction_index += 1
+        when Opcode::JumpIfFalse
+          jump = (@code[instruction_index + 1].to_u16 << 8) + @code[instruction_index + 2].to_u16
+          puts " #{jump}\t->#{instruction_index+jump}"
+          instruction_index += 2
         else
-          puts "#{instruction_index.to_s.rjust(4, '0')} #{opcode.to_s.upcase}"
+          puts ""
         end
         instruction_index += 1
       end
@@ -610,14 +683,6 @@ module Apcsplang
       if @variable_names.has_key?(name)
         @variable_names[name]
       else
-        raise ParseException.new(@scanner.line, "variable #{name} does not exist")
-      end
-    end
-
-    def lookup_variable_or_new(name)
-      if @variable_names.has_key?(name)
-        @variable_names[name]
-      else
         var = @code.new_variable
         @variable_names[name] = var
         var
@@ -643,8 +708,8 @@ module Apcsplang
     def paren_expr
       @scanner.next_token # eat '('
       expression          # parse expression
-      if @scanner.lookahead != TokenType::LeftParen
-        raise ParseException.new(@scanner.line, "expected ')' to close parenthesses, found #{@scanner.value}")
+      if @scanner.lookahead != TokenType::RightParen
+        raise ParseException.new(@scanner.line, "expected ')' to close parenthesses, found '#{@scanner.value}'")
       end
       @scanner.next_token # eat ')'
     end
@@ -659,7 +724,7 @@ module Apcsplang
         # puts "hi"
         @scanner.next_token #consume id
         expression()
-        id = lookup_variable_or_new(name)
+        id = lookup_variable(name)
         @code.set_variable(id, @scanner.line) #doens't set it!!
       else
         id = lookup_variable(name)
@@ -693,7 +758,7 @@ module Apcsplang
       when TokenType::Assign
         raise ParseException.new(@scanner.line, "Unexpected token '#{@scanner.value}': assignment cannot be an expression")
       else
-        id = lookup_variable_or_new(name)
+        id = lookup_variable(name)
         @code.get_variable(id, @scanner.line)
       end
 
@@ -717,6 +782,47 @@ module Apcsplang
       # puts "write call"
     end
 
+    def if_statement
+      @scanner.next_token # consume IF
+      expression
+      
+      if @scanner.lookahead != TokenType::LeftCurly
+        raise ParseException.new(@scanner.line, "expected '{', found '#{@scanner.value}' (IF statement requires curly braces)")
+      end
+      @scanner.next_token
+
+      start_index = @code.last_index
+
+      offset_location = @code.write_jump(Opcode::JumpIfFalse, @scanner.line)
+      
+      block
+ 
+      end_index = @code.last_index
+      @code.patch_jump(offset_location)
+
+      if @scanner.lookahead != TokenType::RightCurly
+        raise ParseException.new(@scanner.line, "expected '}', found '#{@scanner.value}' (didn't close IF statement)")
+      end
+
+      @scanner.next_token #consume '}'
+    end
+
+    def block
+      loop do
+        declaration
+        case @scanner.lookahead
+        when TokenType::EOF, TokenType::RightCurly
+          break
+        end
+      end
+    end
+
+    def boolean_expr(value)
+      @scanner.next_token #consume value
+      @code.write_byte(value ? Opcode::True : Opcode::False, @scanner.line)
+    end
+      
+
     def display_stat
       @scanner.next_token # consume DISPLAY
       if @scanner.lookahead != TokenType::LeftParen
@@ -733,7 +839,7 @@ module Apcsplang
       expression
 
       if @scanner.lookahead != TokenType::RightParen
-        raise ParseException.new(@scanner.line, "expected '(', found '#{@scanner.value}' (expected closing parenthesis for DISPLAY statement)")
+        raise ParseException.new(@scanner.line, "expected ')', found '#{@scanner.value}' (expected closing parenthesis for DISPLAY statement)")
       end
 
       @code.write_byte(Opcode::Display, @scanner.line)
@@ -771,6 +877,10 @@ module Apcsplang
       case @scanner.lookahead
       when TokenType::Identifier
         identifier_expr
+      when TokenType::True
+        boolean_expr(true)
+      when TokenType::False
+        boolean_expr(false)
       when TokenType::StringLiteral
         string_expr
       when TokenType::Number
@@ -804,6 +914,8 @@ module Apcsplang
         displayln_stat
       when TokenType::Identifier
         identifier_expr_or_assignment
+      when TokenType::If
+        if_statement
       else
         expression(true)
       end
@@ -949,6 +1061,7 @@ module Apcsplang
       else
         program = parser.program
         if disassemble
+          puts "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
           program.disassemble
           puts "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         else

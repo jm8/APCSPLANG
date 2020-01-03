@@ -1,4 +1,5 @@
-x ← 2
-x ← x + 2
-DISPLAY ("x =")
-DISPLAYLN (x)
+x <- 2
+IF (x = 2) {
+    DISPLAYLN ("WHY DID MATH BREAK")
+}
+DISPLAYLN ("hello, world")
