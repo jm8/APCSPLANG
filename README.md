@@ -1,4 +1,4 @@
-# apcsplang
+# APCSPLANG
 
 An programming language inspired by the AP Computer Science Principles language (see the [reference sheet](https://apcentral.collegeboard.org/pdf/ap-computer-science-principles-course-and-exam-description.pdf))
 
