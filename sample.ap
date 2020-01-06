@@ -1,2 +1,3 @@
-x <- ["a", 2, true, false]
-DISPLAYLN(x)
+REPEAT UNTIL false {
+    DISPLAYLN("LOOP")
+}

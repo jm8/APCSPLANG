@@ -362,10 +362,14 @@ module Apcsplang
     False
 
     #control flow
+    Jump
     JumpIfFalse
+    JumpIfTrue
+    Loop
 
     #arrays
     Array
+    Index
   end
 
   struct Void
@@ -376,7 +380,7 @@ module Apcsplang
   struct Program
 
     def last_index
-      @code.size - 1
+      @code.size - 1  
     end
 
     @text : String
@@ -449,6 +453,15 @@ module Apcsplang
       id = add_constant(constant)
       write_byte(Opcode::Constant, line)
       write_byte(id, line)
+    end
+
+    def save_loop
+      last_index
+    end
+
+    def write_loop(loop_type : Opcode, target, line)
+      write_byte(loop_type, line)
+      write_two_bytes((@ip - target).to_u16, line)
     end
 
     def write_jump(jump_type : Opcode, line)
@@ -611,9 +624,27 @@ module Apcsplang
               @ip += jump
             end
           else
-            error "if statement must be a Boolean value, not a #{value_type_name value}"
+            error "if statement must have a Boolean value, not a #{value_type_name value}"
+            return
           end
-          when Opcode::Not
+        when Opcode::JumpIfTrue
+          value = @stack.pop
+          if value.is_a?(Bool)
+            jump = read_two_bytes
+            if value == true
+              @ip += jump
+            end
+          else
+            error "if statement must have a Boolean value, not a #{value_type_name value}"
+            return
+          end
+        when Opcode::Loop
+          jump = read_two_bytes
+          @ip -= jump
+        when Opcode::Jump
+          jump = read_two_bytes
+          @ip += jump
+        when Opcode::Not
           a = @stack.pop
           if a.is_a?(Bool)
             @stack.push(!a)
@@ -621,7 +652,25 @@ module Apcsplang
             error "cannot not #{value_type_name a}"
             return
           end
-
+        when Opcode::Index
+          arr = @stack.pop
+          index = @stack.pop
+          if arr.is_a?(Array)
+            if index.is_a?(Float64) && index.to_i32 == index && index > 0 
+              begin
+                @stack.push arr[index.to_i32-1]
+              rescue
+                error "array index out of range"
+                return
+              end
+            else
+              error "array index is not a positive integer"
+              return
+            end
+          else
+            error "cannot index #{value_type_name arr}"
+            return
+          end
         when Opcode::Array
           length = read_byte
           last_stack = @stack.size - 1
@@ -655,9 +704,13 @@ module Apcsplang
         when Opcode::GetVariable, Opcode::SetVariable
           puts " #{@code[instruction_index + 1]}"
           instruction_index += 1
-        when Opcode::JumpIfFalse
-          jump = (@code[instruction_index + 1].to_u16 << 8) + @code[instruction_index + 2].to_u16
+        when Opcode::JumpIfFalse, Opcode::JumpIfTrue, Opcode::Jump
+          jump = (@code[instruction_index + 1].to_u16 << 8) + @code[instruction_index + 2].to_u16 + 2 # idk why
           puts " #{jump}\t->#{instruction_index+jump}"
+          instruction_index += 2
+        when Opcode::Loop
+          jump = (@code[instruction_index + 1].to_u16 << 8) + @code[instruction_index + 2].to_u16
+          puts " #{jump}\t->#{instruction_index-jump}"
           instruction_index += 2
         else
           puts ""
@@ -730,6 +783,21 @@ module Apcsplang
       name = @scanner.value
       @scanner.next_token
       case @scanner.lookahead 
+      when TokenType::LeftSquare
+        @scanner.next_token # consume '['
+        expression
+        if @scanner.lookahead != TokenType::RightSquare
+          raise ParseException.new(@scanner.line, "Unexpected token '#{@scanner.value}': expected ']' to close '['")
+        end
+        @scanner.next_token
+        case @scanner.lookahead
+        when TokenType::Assign
+          raise ParseException.new(@scanner.line, "Unexpected token '#{@scanner.value}': assignment cannot be an expression")
+        else
+          id = lookup_variable(name)
+          @code.get_variable(id, @scanner.line)
+          @code.write_byte(Opcode::Index, @scanner.line)
+        end
       when TokenType::Assign
         # puts "hi"
         @scanner.next_token #consume id
@@ -767,29 +835,52 @@ module Apcsplang
       case @scanner.lookahead 
       when TokenType::Assign
         raise ParseException.new(@scanner.line, "Unexpected token '#{@scanner.value}': assignment cannot be an expression")
+      when TokenType::LeftSquare
+        @scanner.next_token # consume '['
+        expression
+        puts @scanner.lookahead
+        if @scanner.lookahead != TokenType::RightSquare
+          raise ParseException.new(@scanner.line, "Unexpected token '#{@scanner.value}': expected ']' to close '['")
+        end
+        @scanner.next_token
+        case @scanner.lookahead
+        when TokenType::Assign
+          raise ParseException.new(@scanner.line, "Unexpected token '#{@scanner.value}': assignment cannot be an expression")
+        else
+          id = lookup_variable(name)
+          @code.get_variable(id, @scanner.line)
+          @code.write_byte(Opcode::Index, @scanner.line)
+        end
       else
         id = lookup_variable(name)
         @code.get_variable(id, @scanner.line)
       end
+    end
 
-      # return if there is no call
-      # return unless @scanner.lookahead == TokenType::LeftParen
+    def repeat_statement
+      @scanner.next_token # consume REPEAT
+      if @scanner.lookahead == TokenType::Until
+        @scanner.next_token # consume Until
+        begining = @code.save_loop
+        expression
+        exit_jump = @code.write_jump(Opcode::JumpIfTrue, @scanner.line)
+        
+        if @scanner.lookahead != TokenType::LeftCurly
+          raise ParseException.new(@scanner.line, "expected '{', found '#{@scanner.value}' (IF statement requires curly braces)")
+        end
+        @scanner.next_token
 
-      # #there is a call
-      # loop do
-      #   expression
-      #   break if @scanner.lookahead == TokenType::LeftParen
+        block
 
-      #   if @scanner.lookahead != TokenType::Comma
-      #     raise ParseException.new(@scanner.line, "expected ')' or ',' in argument list, found #{@scanner.value}")
-      #   end
 
-      #   @scanner.next_token
-      # end
+        if @scanner.lookahead != TokenType::RightCurly
+          raise ParseException.new(@scanner.line, "expected '}', found '#{@scanner.value}' (didn't close IF statement)")
+        end
+        @scanner.next_token
 
-      # @scanner.next_token #eat ')'
-
-      # puts "write call"
+        @code.write_loop(Opcode::Loop, begining, @scanner.line)
+        
+      end
     end
 
     def if_statement
@@ -801,28 +892,45 @@ module Apcsplang
       end
       @scanner.next_token
 
-      start_index = @code.last_index
-
-      offset_location = @code.write_jump(Opcode::JumpIfFalse, @scanner.line)
+      false_body_jump = @code.write_jump(Opcode::JumpIfFalse, @scanner.line)
       
       block
- 
-      end_index = @code.last_index
-      @code.patch_jump(offset_location)
 
       if @scanner.lookahead != TokenType::RightCurly
         raise ParseException.new(@scanner.line, "expected '}', found '#{@scanner.value}' (didn't close IF statement)")
       end
-
       @scanner.next_token #consume '}'
+ 
+
+      if @scanner.lookahead == TokenType::Else
+        @scanner.next_token # consume 'ELSE'
+        after_if_jump = @code.write_jump(Opcode::Jump, @scanner.line)
+        @code.patch_jump(false_body_jump)
+        if @scanner.lookahead != TokenType::LeftCurly
+          raise ParseException.new(@scanner.line, "expected '{', found '#{@scanner.value}' (ELSE requires curly braces)")
+        end
+        @scanner.next_token # consume '{'
+
+
+        block
+
+        if @scanner.lookahead != TokenType::RightCurly
+          raise ParseException.new(@scanner.line, "expected '}', found '#{@scanner.value}' (didn't close ELSE block)")
+        end
+        @scanner.next_token #consume '}'
+        @code.patch_jump(after_if_jump)
+      else
+        @code.patch_jump(false_body_jump)
+      end
     end
 
     def block
       loop do
-        declaration
         case @scanner.lookahead
         when TokenType::EOF, TokenType::RightCurly
           break
+        else
+          declaration
         end
       end
     end
@@ -906,9 +1014,11 @@ module Apcsplang
     def primary(is_statement = false)
       case @scanner.lookahead
       when TokenType::Not
+        @scanner.next_token
         expression
         @code.write_byte(Opcode::Not, @scanner.line)
       when TokenType::Minus
+        @scanner.next_token
         expression
         @code.write_byte(Opcode::Negate, @scanner.line)
       when TokenType::Identifier
@@ -950,6 +1060,8 @@ module Apcsplang
         display_stat
       when TokenType::Displayln
         displayln_stat
+      when TokenType::Repeat
+        repeat_statement
       when TokenType::Identifier
         identifier_expr_or_assignment
       when TokenType::If
